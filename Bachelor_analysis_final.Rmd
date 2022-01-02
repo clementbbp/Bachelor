@@ -1,6 +1,6 @@
 ---
 title: "Bachelor Analysis Final"
-author: "Clement Peters"
+author: "Clement Peters and Nicoline Schmidt"
 date: "11/4/2021"
 output: html_document
 editor_options: 
