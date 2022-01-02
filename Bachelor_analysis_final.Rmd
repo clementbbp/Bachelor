@@ -1,0 +1,1203 @@
+---
+title: "Bachelor Analysis Final"
+author: "Clement Peters"
+date: "11/4/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r}
+##Packages
+library(pacman)
+p_load(tidyverse,devtools, ggplot2, data.table, lme4, saccades, gazepath,MASS, nnet, effects, mixcat, emmeans, multcomp, viridis, memisc, mclogit, corrplot, Metrics, caret, InformationValue, ISLR, MuMIn)
+library("eyetrackingR")
+setwd("C:/Users/cleme/Desktop/Bachelor Project/Psychopy Examples/ExperimentTwo")
+#And a happy New Year
+```
+
+#Some sentence analysis
+```{r}
+#Getting the competence scores from the sentences used in the experiment
+sentences <- read_excel("C:/Users/cleme/Desktop/Bachelor Project/Psychopy Examples/ExperimentTwo/Sentences/SentencesHighLow1.xlsx")
+
+sentences_all <- read_excel("C:/Users/cleme/Desktop/Bachelor Project/Psychopy Examples/ExperimentTwo/Sentences/Sentences1 (2).xlsx", sheet = "Datasæt")
+sentences_all$SentenceWC <- gsub('[[:digit:]]+', '', sentences_all$SentenceWC)
+competence_s <- sentences_all %>% 
+  filter(SentenceWC == "Competence")
+competence_s <-sentences %>%  right_join(competence_s[competence_s$SentenceNumber %in% sentences$SentenceNumber,]) 
+
+competence_s <- competence_s %>% 
+  mutate(Valence = ifelse(Average <= 2, "LC", "HC"))
+colnames(competence_s)[3] <- "AverageComp"
+colnames(competence_s)[4] <- "SDComp"
+colnames(competence_s)[7] <- "ValenceComp"
+colnames(sentences)[3] <- "AverageWarmth"
+colnames(sentences)[4] <- "SDWarmth"
+colnames(sentences)[7] <- "ValenceWarmth"
+
+sentences_used <- right_join(sentences, competence_s, by = c("Sentence", "SentenceNumber"))
+sentences_used <- select(sentences_used, Sentence, SentenceNumber, AverageWarmth, SDWarmth, ValenceWarmth, AverageComp, SDComp, ValenceComp)
+
+sentences_used$Sentence %in% participant_data$sentence
+```
+
+
+#Defining functions
+```{r}
+change_box <- function(df){
+for (k in 81:nrow(df)){
+
+  if (df$choice[k] == "BoxOne"){
+    df$choice[k] <- as.integer(1)
+  } else if (df$choice[k] == "BoxTwo"){
+    df$choice[k] <- as.integer(2)
+  } else if (df$choice[k] == "BoxThree"){
+    df$choice[k] <- as.integer(3)
+  } else if (df$choice[k] == "BoxFour"){
+    df$choice[k] <- as.integer(4)
+  } else{
+    next
+  } 
+}
+return(df)}
+
+define_choice_congruence <- function(df){
+
+df$choice_congruence <-  0
+for (trial in 81:nrow(df)){
+
+  if (df$choice[trial] == 1 & df$percent100[trial] == 1){
+    df$choice_congruence[trial] <- 100
+  } else if (df$choice[trial] == 1 & df$percent66[trial] == 1){
+    df$choice_congruence[trial] <- 66
+  } else if (df$choice[trial] == 1 & df$percent33[trial] == 1){
+    df$choice_congruence[trial] <- 33
+  } else if (df$choice[trial] == 1 & df$percent0[trial] == 1){
+    df$choice_congruence[trial] <- 0
+  } else if (df$choice[trial] == 2 & df$percent100[trial] == 2){
+    df$choice_congruence[trial] <- 100
+  } else if (df$choice[trial] == 2 & df$percent66[trial] == 2){
+    df$choice_congruence[trial] <- 66
+  } else if (df$choice[trial] == 2 & df$percent33[trial] == 2){
+    df$choice_congruence[trial] <- 33
+  } else if (df$choice[trial] == 2 & df$percent0[trial] == 2){
+    df$choice_congruence[trial] <- 0
+  } else if (df$choice[trial] == 3 & df$percent100[trial] == 3){
+    df$choice_congruence[trial] <- 100
+  } else if (df$choice[trial] == 3 & df$percent66[trial] == 3){
+    df$choice_congruence[trial] <- 66
+  } else if (df$choice[trial] == 3 & df$percent33[trial] == 3){
+    df$choice_congruence[trial] <- 33
+  } else if (df$choice[trial] == 3 & df$percent0[trial] == 3){
+    df$choice_congruence[trial] <- 0
+  } else if (df$choice[trial] == 4 & df$percent100[trial] == 4){
+    df$choice_congruence[trial] <- 100
+  } else if (df$choice[trial] == 4 & df$percent66[trial] == 4){
+    df$choice_congruence[trial] <- 66
+  } else if (df$choice[trial] == 4 & df$percent33[trial] == 4){
+    df$choice_congruence[trial] <- 33
+  } else if (df$choice[trial] == 4 & df$percent0[trial] == 4){
+    df$choice_congruence[trial] <- 0
+  }
+}
+return(df)}#End function
+
+#Defining the "not in" function
+'%!in%' <- function(x,y)!('%in%'(x,y))
+
+#Get trials
+get_trials <- function(ET_data, participant_data){
+  
+  ET_data$Trial <- 0
+  #Remove the .csv part from the id column
+  ET_data$id <- substr(ET_data$id, 1,3)
+  #Change the name of the ID column so it matches the others
+  colnames(ET_data)[36] <- "ID"
+  colnames(participant_data)[3] <- "ID"
+  #Save the %>% phase in seperate object
+  # test_phase <- participant_data %>% 
+  # filter(phase == "Test")
+  
+  #Get the trial start and end times for the test phase
+  trial_start <- as.tibble(participant_data$startTrial)
+  trial_start$endTrial <- participant_data$endTrial
+  
+  #Loop through rows in ET data to find the start and ends of the trials
+  for (d in 1:nrow(trial_start)){
+    
+  
+    for (i in 1:nrow(ET_data)){
+  
+      if (ET_data$Time[i] >= trial_start$value[d] & ET_data$Time[i] <= trial_start$endTrial[d]){
+        ET_data$Trial[i] <-  d
+      } 
+    }
+  }
+  ET_data <- ET_data %>% 
+  mutate(Phase = ifelse(Trial <=80, "Learning", "Test"))
+  
+  #Merge and get the calibration and eye dominance scores for the particular  participant
+  ET_data <- merge(ET_data, calibration_eyedom, by = "ID")
+  
+  #Find the choice congruence of the participant
+  participant_data <- change_box(participant_data)
+  participant_data$choice <- as.integer(participant_data$choice)
+  participant_data <- define_choice_congruence(participant_data)
+  participant_data$trial <- 1:110
+  colnames(participant_data)[8] <- "Trial"
+  
+  
+  RT_and_Congruences <- select(participant_data, ID, Trial, reaction_time, box1, box2, box3, box4, percent100, percent66, percent33, percent0, choice, sentence, sentenceWarmth, sentenceCompetence, choice_congruence)
+  
+  #Changing the names of the GazePoint columns because they're weird
+  colnames(ET_data)[12] <- "LeftGazePointX"
+  colnames(ET_data)[13] <- "LeftGazePointY"
+  colnames(ET_data)[23] <- "RightGazePointX"
+  colnames(ET_data)[24] <- "RightGazePointY"
+ 
+   #Flipping Y-axis back so it goes from Bottom (0) to Top (100)
+  ET_data <- ET_data %>% 
+    mutate(LeftGazePointY = 100 - LeftGazePointY,
+           RightGazePointY = 100 - RightGazePointY)
+  
+  ET_data %>% 
+    group_by(Trial) %>% 
+    count()
+  
+  #Adding Box1 to the ET data - dependent on eye dominance
+  if(ET_data$Dom_eye == "right"){
+  ET_data <- add_aoi(ET_data, aoi_dataframe = AOI_box1, 
+                    x_col = "RightGazePointX", 
+                    y_col = "RightGazePointY", 
+                    aoi_name = "Box1", 
+                    x_min_col = "Left", 
+                    x_max_col = "Right", 
+                    y_min_col = "Bottom", 
+                    y_max_col = "Top")
+  }else{
+    ET_data <- add_aoi(ET_data, aoi_dataframe = AOI_box1, 
+                    x_col = "LeftGazePointX", 
+                    y_col = "LeftGazePointY", 
+                    aoi_name = "Box1", 
+                    x_min_col = "Left", 
+                    x_max_col = "Right", 
+                    y_min_col = "Bottom", 
+                    y_max_col = "Top")
+  }
+  
+  #Adding Box2 to the ET data - dependent on eye dominance
+  if(ET_data$Dom_eye == "right"){
+  ET_data <- add_aoi(ET_data, aoi_dataframe = AOI_box2, 
+                    x_col = "RightGazePointX", 
+                    y_col = "RightGazePointY", 
+                    aoi_name = "Box2", 
+                    x_min_col = "Left", 
+                    x_max_col = "Right", 
+                    y_min_col = "Bottom", 
+                    y_max_col = "Top")
+  }else{
+    ET_data <- add_aoi(ET_data, aoi_dataframe = AOI_box2, 
+                    x_col = "LeftGazePointX", 
+                    y_col = "LeftGazePointY", 
+                    aoi_name = "Box2", 
+                    x_min_col = "Left", 
+                    x_max_col = "Right", 
+                    y_min_col = "Bottom", 
+                    y_max_col = "Top")
+  }
+  
+  #Adding Box3 to the ET data - dependent on eye dominance
+  if(ET_data$Dom_eye == "right"){
+  ET_data <- add_aoi(ET_data, aoi_dataframe = AOI_box3, 
+                    x_col = "RightGazePointX", 
+                    y_col = "RightGazePointY", 
+                    aoi_name = "Box3", 
+                    x_min_col = "Left", 
+                    x_max_col = "Right", 
+                    y_min_col = "Bottom", 
+                    y_max_col = "Top")
+  }else{
+    ET_data <- add_aoi(ET_data, aoi_dataframe = AOI_box3, 
+                    x_col = "LeftGazePointX", 
+                    y_col = "LeftGazePointY", 
+                    aoi_name = "Box3", 
+                    x_min_col = "Left", 
+                    x_max_col = "Right", 
+                    y_min_col = "Bottom", 
+                    y_max_col = "Top")
+  }
+  
+  #Adding Box4 to the ET data - dependent on eye dominance
+  if(ET_data$Dom_eye == "right"){
+  ET_data <- add_aoi(ET_data, aoi_dataframe = AOI_box4, 
+                    x_col = "RightGazePointX", 
+                    y_col = "RightGazePointY", 
+                    aoi_name = "Box4", 
+                    x_min_col = "Left", 
+                    x_max_col = "Right", 
+                    y_min_col = "Bottom", 
+                    y_max_col = "Top")
+  }else{
+    ET_data <- add_aoi(ET_data, aoi_dataframe = AOI_box4, 
+                    x_col = "LeftGazePointX", 
+                    y_col = "LeftGazePointY", 
+                    aoi_name = "Box4", 
+                    x_min_col = "Left", 
+                    x_max_col = "Right", 
+                    y_min_col = "Bottom", 
+                    y_max_col = "Top")
+  }
+
+  
+  ET_data <- merge(ET_data, RT_and_Congruences, by = c("ID", "Trial"))
+  colnames(ET_data)[55] <- "Sentence"
+  length(unique(ET_data$Sentence))
+  length(unique(sentences_used$Sentence))
+  #I need to only merge by the sentences that were actually used in the experiment, and not in the trial rounds! This means i need to exclude 12 sentences from "sentences_used" - those that are deemed false when doing "sentences_used$Sentence %in% participant_data$sentence"
+
+  indeces_of_nonused <- which(participant_data$sentence %!in% sentences_used$Sentence)
+  
+  ET_data <- merge(ET_data, sentences_used, by = "Sentence")
+  
+  return(ET_data)
+}
+```
+
+
+#Preparing the dataframe for analysis
+```{r}
+#Sometimes I try to load all data from a folder into one dataset, and sometimes I want them in separate datasets.
+
+##Load data behavioral
+df <- list.files(path="C:/Users/cleme/Desktop/Bachelor Project/Psychopy Examples/ExperimentTwo/Data/", full.names = TRUE) %>% 
+  lapply(read_csv) %>% 
+  bind_rows
+
+#I also need the information from the calibration and eye dominance
+calibration_eyedom <- read_csv("C:/Users/cleme/Desktop/Bachelor Project/Psychopy Examples/ExperimentTwo/Participants - Ark1.csv")
+calibration_eyedom <- select(calibration_eyedom, "ID", "Dominant-Eye", "Kalibrering")
+colnames(calibration_eyedom) <- c("ID", "Dom_eye", "Calibration")
+
+#Loading AOI Dataframes
+AOI_box1 <- read_csv("C:/Users/cleme/Desktop/Bachelor Project/Psychopy Examples/ExperimentTwo/AOI_box1.csv")
+AOI_box2 <- read_csv("C:/Users/cleme/Desktop/Bachelor Project/Psychopy Examples/ExperimentTwo/AOI_box2.csv")
+AOI_box3 <- read_csv("C:/Users/cleme/Desktop/Bachelor Project/Psychopy Examples/ExperimentTwo/AOI_box3.csv")
+AOI_box4 <- read_csv("C:/Users/cleme/Desktop/Bachelor Project/Psychopy Examples/ExperimentTwo/AOI_box4.csv")
+
+
+#Load ET Data
+#I need the name of the file to be added as a column in the data
+infolder  <- "C:/Users/cleme/Desktop/Bachelor Project/Psychopy Examples/ExperimentTwo/ET Data"
+outfolder <- "C:/Users/cleme/Desktop/Bachelor Project/Psychopy Examples/ExperimentTwo/ET Data1"
+
+for (i in csvfiles){
+  tmpfile <- read_csv(i)
+  tmpfile$id <- i
+  write_csv(tmpfile, file.path(outfolder, i))
+}
+
+filenames <- list.files(path="C:/Users/cleme/Desktop/Bachelor Project/Psychopy Examples/ExperimentTwo/ET Data1/", full.names = TRUE)
+
+ET_all$id <- substr(ET_all$id, 1,3)
+
+namesET <- unique(ET_all$id)
+namesDF <- unique(df$id)
+namesET == namesDF
+
+
+
+#Save the test phase in seperate object
+test_phase <- df %>% 
+  filter(phase == "Test")
+
+#Get the trial start and end times for the test phase
+trial_start <- as.tibble(test_phase$startTrial)
+trial_start$endTrial <- test_phase$endTrial
+
+#Make empty column in ET data
+ET_all$Trial <- 0
+
+#Load ET data into separate dataframes
+filenames_ET <- list.files(path="C:/Users/cleme/Desktop/Bachelor Project/Psychopy Examples/ExperimentTwo/ET Data", pattern = ".csv")
+
+##Create list of data frame names without the ".csv" part 
+namesET <-substr(filenames_ET,1,3)
+
+###Load all ET files
+for(i in namesET){
+    filepath <- file.path("C:/Users/cleme/Desktop/Bachelor Project/Psychopy Examples/ExperimentTwo/ET Data1",paste(i,".csv",sep=""))
+    assign(i, read_csv(filepath))
+}
+
+#Load behavioral data into separate dataframes
+filenames_behavioral <- list.files(path="C:/Users/cleme/Desktop/Bachelor Project/Psychopy Examples/ExperimentTwo/Data", pattern = ".csv")
+
+#Remove the .csv part of the behavioral data name
+namesBehave <-substr(filenames_behavioral,1,28)
+
+#And load the data into separate dataframes
+for(i in namesBehave){
+    filepath <- file.path("C:/Users/cleme/Desktop/Bachelor Project/Psychopy Examples/ExperimentTwo/Data",paste(i,".csv",sep=""))
+    assign(i, read_csv(filepath))
+}
+
+##Now we to the get_trials function on all the datarframes
+AAA <- get_trials(AAA, logfile_AAA_2021_Nov_17_0812)
+AAB <- get_trials(AAB, logfile_AAB_2021_Nov_17_0850)
+AAC <- get_trials(AAC, logfile_AAC_2021_Nov_17_1257)
+AAD <- get_trials(AAD, logfile_AAD_2021_Nov_17_1503)
+AAF <- get_trials(AAF, logfile_AAF_2021_Nov_17_0949)
+AAG <- get_trials(AAG, logfile_AAG_2021_Nov_17_1013)
+AAH <- get_trials(AAH, logfile_AAH_2021_Nov_17_1037)
+AAJ <- get_trials(AAJ, logfile_AAJ_2021_Nov_17_1103)
+AAK <- get_trials(AAK, logfile_AAK_2021_Nov_17_1125)
+AAL <- get_trials(AAL, logfile_AAL_2021_Nov_17_1230)
+AAM <- get_trials(AAM, logfile_AAM_2021_Nov_17_1640)
+AAN <- get_trials(AAN, logfile_AAN_2021_Nov_17_1526)
+AAS <- get_trials(AAS, logfile_AAS_2021_Nov_17_0920)
+AAV <- get_trials(AAV, logfile_AAV_2021_Nov_17_1356)
+ABB <- get_trials(ABB, logfile_ABB_2021_Nov_18_1302)
+ACC <- get_trials(ACC, logfile_ACC_2021_Nov_18_1101)
+ADD <- get_trials(ADD, logfile_ADD_2021_Nov_17_1808)
+AGG <- get_trials(AGG, logfile_AGG_2021_Nov_18_0834)
+AHH <- get_trials(AHH, logfile_AHH_2021_Nov_18_0858)
+AJJ <- get_trials(AJJ, logfile_AJJ_2021_Nov_18_0932)
+AKK <- get_trials(AKK, logfile_AKK_2021_Nov_18_1007)
+ALL <- get_trials(ALL, logfile_ALL_2021_Nov_18_1031)
+AMM <- get_trials(AMM, logfile_AMM_2021_Nov_18_1401)
+ANN <- get_trials(ANN, logfile_ANN_2021_Nov_18_1328)
+ASS <- get_trials(ASS, logfile_ASS_2021_Nov_17_1734)
+AVV <- get_trials(AVV, logfile_AVV_2021_Nov_18_1207)
+DFF <- get_trials(DFF, logfile_DFF_2021_Nov_19_1405)
+DGG <- get_trials(DGG, logfile_DGG_2021_Nov_19_1432)
+DHH <- get_trials(DHH, logfile_DHH_2021_Nov_19_1134)
+DJJ <- get_trials(DJJ, logfile_DJJ_2021_Nov_19_1502)
+SBB <- get_trials(SBB, logfile_SBB_2021_Nov_19_1203)
+SDD <- get_trials(SDD, logfile_SDD_2021_Nov_18_1428)
+SFF <- get_trials(SFF, logfile_SFF_2021_Nov_18_1449)
+SGG <- get_trials(SGG, logfile_SGG_2021_Nov_18_1518)
+SHH <- get_trials(SHH, logfile_SHH_2021_Nov_18_1602)
+SJJ <- get_trials(SJJ, logfile_SJJ_2021_Nov_19_0800)
+SKK <- get_trials(SKK, logfile_SKK_2021_Nov_19_0859)
+SLL <- get_trials(SLL, logfile_SLL_2021_Nov_19_1037)
+SMM <- get_trials(SMM, logfile_SMM_2021_Nov_19_1321)
+SNN <- get_trials(SNN, logfile_SNN_2021_Nov_19_1104)
+SVV <- get_trials(SVV, logfile_SVV_2021_Nov_19_0955)
+
+ET_all <- rbind(AAA,AAB,AAC,AAD,AAF,AAG,AAH,AAJ,AAK,AAL,AAM,AAN,AAS,AAV,ABB,ACC,ADD,AGG,AHH,AJJ,AKK,ALL,AMM,ANN,ASS,AVV,DFF,DGG,DHH,DJJ,SBB,SDD,SFF,SGG,SHH,SJJ,SKK,SLL,SMM,SNN,SVV) ##Trial 0 has been excluded - everything before experiment, and during fixation cross
+
+length(unique(ET_all$ID))
+length(unique(ET_all$Trial))
+ET_all %>% 
+  group_by(Phase, Trial) %>% 
+  count() %>% 
+  arrange(desc(n))
+  
+
+
+#Setting the TimeSinceTrialOnset
+ET_all <- ET_all %>% 
+  group_by(Trial, ID) %>% 
+  mutate(TimeSinceTrialOnset = Time - min(Time))
+#Copy the dataframe for safety
+ET_all1 <- ET_all
+
+
+unique(ET_all$Calibration) #Calibration scores are messed up sometimes.
+
+#Take the calibration scores > 40 and divide those by 100. Give rows with NA a calibration score of 9.3
+ET_all <- ET_all %>%
+  mutate(Calibration = if_else(Calibration > 40, Calibration/100, Calibration, missing = 9.3))
+
+#Some of them are still messed up, so changing them to the right values
+ET_all <- ET_all %>%
+  mutate(Calibration = if_else(Calibration == 14.00 | Calibration == 19.00 | Calibration == 24.00 | Calibration == 35.00, Calibration/10, Calibration))
+
+#Last time, i swear
+ET_all <- ET_all %>%
+  mutate(Calibration = if_else(Calibration == 0.45, Calibration*10, Calibration))
+
+#Clean data by calibration. Set limit at 12
+ET_all_clean <- ET_all %>% 
+  filter(Calibration <= 12)
+
+ET_all %>% 
+  group_by(Calibration, ID) %>% 
+  count()
+#Removing all of trial 0 - stuff that happened before the experiment started
+ET_test <- ET_all_clean %>%
+  filter(Phase == "Test")
+ET_test %>% 
+  group_by(Trial) %>% 
+  count()
+
+#Summarizing some data per participant
+ET_test %>% 
+  group_by(ID) %>% 
+  summarize(maxTime = (max(TimeSinceTrialOnset))/1000,
+            avrTime = (mean(TimeSinceTrialOnset))/1000,
+            SDavrTime = (sd(TimeSinceTrialOnset))/1000,
+            SEmean = (sd(TimeSinceTrialOnset)/sqrt(length(TimeSinceTrialOnset)))/1000) %>% 
+  arrange(desc(SDavrTime))
+
+#Making a column for which AOI the participant is currently looking in
+
+ET_test1 <- ET_test
+ET_test <- ET_test %>% 
+  mutate(Gaze_in_AOI = case_when(Box1 == T ~ "1",
+                                 Box2 == T ~ "2",
+                                 Box3 == T ~ "3",
+                                 Box4 == T ~ "4"
+                                 )
+  )
+ET_test$Gaze_in_AOI[is.na(ET_test$Gaze_in_AOI)] <- 0
+
+#This plot says something about how the participants are affected by the reading direction.
+ET_test %>%  
+  filter(Gaze_in_AOI != 0) %>% 
+  ggplot(aes(Gaze_in_AOI)) + geom_bar(aes(fill = Gaze_in_AOI), width = 0.5) + theme_bw() + labs(title = "Time Spent in Each AOI") + xlab("AOI") + theme(legend.position = "none")
+
+ET_test %>% 
+  group_by(Gaze_in_AOI) %>% 
+  count(sort = T)
+
+ET_test %>% 
+  group_by(percent100) %>% 
+  count(sort = F)
+
+ET_test <- ET_test %>% 
+  mutate(ID = as.factor(ID),
+         Trial = as.factor(Trial),
+         Phase = as.factor(Phase),
+         Dom_eye = as.factor(Dom_eye),
+         box1 = as.factor(box1),
+         box2 = as.factor(box2),
+         box3 = as.factor(box3),
+         box4 = as.factor(box4),
+         percent100 = as.factor(percent100),
+         percent66 = as.factor(percent66),
+         percent33 = as.factor(percent33),
+         percent0 = as.factor(percent0),
+         choice = as.factor(choice),
+         sentenceWarmth = as.factor(sentenceWarmth),
+         choice_congruence = as.factor(choice_congruence),
+         SentenceNumber = as.factor(SentenceNumber),
+         ValenceWarmth= as.factor(ValenceWarmth),
+         ValenceComp = as.factor(ValenceComp),
+         Gaze_in_AOI = as.factor(Gaze_in_AOI))
+colnames(ET_test)[5] <- "LeftFound"
+colnames(ET_test)[16] <- "RightFound"
+
+#giving distance in mm and changing the gazepoints to pixels
+ET_test$Distance <- ET_test$Distance*10 
+ET_test$pxRightGazePointX <- ET_test$RightGazePointX*19.2
+ET_test$pxRightGazePointY <- ET_test$RightGazePointY*10.8
+ET_test$pxLeftGazePointX <- ET_test$LeftGazePointX*19.2
+ET_test$pxLeftGazePointY <- ET_test$LeftGazePointY*10.8
+
+
+#write.csv(EventsAll, "C:/Users/cleme/Desktop/Bachelor Project/Psychopy Examples/ExperimentTwo/EventsAll.csv")
+
+
+
+```
+
+##Define fixations and saccades
+```{r}
+eye1 <- ET_test %>% 
+  arrange(ID, Trial, TimeSinceTrialOnset)
+
+#calculate metrics for RIGHT eye
+eye1 <- eye1 %>% 
+  group_by(ID, Trial) %>%
+  mutate(RightMeanVelocity = sqrt(((lag(pxRightGazePointX) - 
+                                 pxRightGazePointX))^2 + ((lag(pxRightGazePointY) - 
+                                 pxRightGazePointY))^2) / (lag(Time/1000) - Time/1000))
+
+eye1 %>% 
+  filter(RightMeanVelocityX >= 0.000000000001) %>% 
+  group_by(ID) %>% 
+  summarise(meanVel = mean(RightMeanVelocityX),
+            sdVel = sd(RightMeanVelocityX),
+            minVel = min(RightMeanVelocityX),
+            maxVel = max(RightMeanVelocityX)) %>% 
+  arrange(desc(meanVel))
+
+
+
+#calculate metrics for LEFT eye
+eye1 <- eye1 %>% 
+  group_by(ID, Trial) %>% 
+  mutate(LeftMeanVelocity = sqrt(((lag(pxLeftGazePointX) - 
+                                 pxLeftGazePointX))^2 + ((lag(pxLeftGazePointY) - 
+                                 pxLeftGazePointY))^2) / (lag(Time/1000) - Time/1000))
+FixationThreshold <- 800
+
+#select relevant varibles: 
+# eye1 <- dplyr::select(eye1,ID, Time, PositionX, PositionY, MeanVelocityX, MeanVelocityY, MeanAccellerationX, MeanAccellerationY, Gain, Distance)
+
+#Extract fixations and saccades: 
+EventsRight <- eye1 %>%
+  filter(Dom_eye == "right") %>% 
+  group_by(ID, Trial) %>%
+  ## if velocity is < 20 degrees/sec, the eye is "not moving" --> 20deg/s == 1400px/s
+  mutate(
+    LowVelocity = ifelse(
+      RightMeanVelocity>-FixationThreshold &
+      RightMeanVelocity<FixationThreshold, 1, 0)
+  ) %>%
+  mutate(LowVelocity = coalesce(LowVelocity, 0)) %>%
+  ## create rolling window for averaging - "look at 20 lines at a time, if every line exceeds some boundary (the probability threshold), give it a 1 (for fixation), else, give it a 0"
+  mutate(Event = (cumsum(LowVelocity) - lag(cumsum(LowVelocity), n = 5))/5) %>%
+  ## the next lines are very hacky
+  ## if average is > .9, count as fixation
+  mutate(FixationNum = ifelse(Event >= 0.90, 1, 0),#now we get a more consistent dataset
+         .count = ifelse(c(0, diff(FixationNum)) == 1, 1, 0),
+         .count = coalesce(.count, 0),
+         .groups = cumsum(.count),
+         FixationNum = ifelse(FixationNum == 1, .groups, NA)) %>%
+  dplyr::select(-c(.count, .groups)) %>% 
+  ## otherwise count as saccade
+  mutate(SaccadeNum = ifelse(Event < 0.90, 1, 0),
+         .count = ifelse(c(0, diff(SaccadeNum)) == 1, 1, 0),
+         .count = coalesce(.count, 0),
+         .groups = cumsum(.count),
+         SaccadeNum = ifelse(SaccadeNum == 1, .groups, NA)) %>%
+  dplyr::select(-c(.count, .groups)) %>% 
+  mutate(Event = ifelse(Event >= 0.90, 'Fixation', 'Saccade')) %>% 
+  arrange(ID, Trial, TimeSinceTrialOnset)
+
+EventsRight %>% 
+  group_by(Event) %>%
+  count()
+
+eye1 %>% 
+  group_by(ID) %>% 
+  summarize(mean = mean(RightMeanVelocity),
+            sd = sd(RightMeanVelocity)) %>% 
+  arrange(desc(mean))
+
+EventsAll %>% 
+  filter(Distance >= 0) %>%
+  ungroup() %>% 
+  summarise(meanDist = mean(Distance),
+            sdDist = sd(Distance))
+
+#AND DO IT AGAIN FOR THE LEFT EYE PEOPLE
+#Extract fixations and saccades: 
+EventsLeft <- eye1 %>% 
+  filter(Dom_eye == "left") %>% 
+  group_by(ID, Trial) %>%
+  ## if velocity is < 20 degrees/sec, the eye is "not moving"
+  mutate(
+    LowVelocity = ifelse(
+      as.numeric(LeftMeanVelocity)>-FixationThreshold &
+      as.numeric(LeftMeanVelocity)<FixationThreshold, 1, 0)
+  ) %>%
+  mutate(LowVelocity = coalesce(LowVelocity, 0)) %>%
+  ## create rolling window for averaging - "look at 20 lines at a time, if every line exceeds some boundary (the probability threshold), give it a 1 (for fixation), else, give it a 0"
+  mutate(Event = (cumsum(LowVelocity) - lag(cumsum(LowVelocity), n = 5))/5) %>%
+  ## the next lines are very hacky
+  ## if average is > .9, count as fixation
+  mutate(FixationNum = ifelse(Event >= 0.90, 1, 0),#now we get a more consistent dataset
+         .count = ifelse(c(0, diff(FixationNum)) == 1, 1, 0),
+         .count = coalesce(.count, 0),
+         .groups = cumsum(.count),
+         FixationNum = ifelse(FixationNum == 1, .groups, NA)) %>%
+  dplyr::select(-c(.count, .groups)) %>% 
+  ## otherwise count as saccade
+  mutate(SaccadeNum = ifelse(Event < 0.90, 1, 0),
+         .count = ifelse(c(0, diff(SaccadeNum)) == 1, 1, 0),
+         .count = coalesce(.count, 0),
+         .groups = cumsum(.count),
+         SaccadeNum = ifelse(SaccadeNum == 1, .groups, NA)) %>%
+  dplyr::select(-c(.count, .groups)) %>% 
+  mutate(Event = ifelse(Event >= 0.90, 'Fixation', 'Saccade'))
+
+EventsLeft %>% 
+  group_by(Event, ID) %>%
+  count()
+
+EventsAll <- rbind(EventsRight, EventsLeft)
+
+EventsAll$FixationNum <- as.numeric(EventsAll$FixationNum)
+
+#Create a dataset that only contains the fixations: 
+fixations = filter(Events, Event == "Fixation")
+fixations = filter(fixations, PositionY != 100)
+unique(EventsAll$FixationNum)
+
+EventsAll %>%
+  filter(FixationNum >= 0) %>% 
+  group_by(ID) %>% 
+  summarize(meanFix = mean(FixationNum),
+            minFix = min(FixationNum),
+            maxFix = max(FixationNum),
+            meanReactionTime = mean(reaction_time)) %>% 
+  arrange(desc(meanFix))
+
+EventsAll %>% 
+  filter(FixationNum >= 0) %>% 
+  group_by(FixationNum) %>% 
+  summarise(meanFixLen = length(FixationNum))
+
+###Plot some fixations
+##Try to plot Gaze Points on X and Y, and see of you can eyeball the number of fixations per trial
+ET_test %>% 
+  filter(ID == "ASS" | Trial == 101) %>%
+  ggplot(aes(x = TimeSinceTrialOnset, y = pxRightGazePointX)) + geom_jitter()
+
+#Plotting full gazepoints for a single participant and trial
+#Showing total gaze (GAZE POINT)
+plot_freq <- 1
+#!is.na(FixationNum) - if i want to remove saccades from the plot
+test_ET <- EventsAll %>% 
+  filter(ID == "DJJ", pxRightGazePointY != 1080, pxRightGazePointY != 0, pxLeftGazePointY != 1080, pxLeftGazePointY != 0, Trial == 110)
+
+test_ET %>% 
+  group_by(Trial) %>% 
+  count(sort = T)
+
+#Drawing rectangles for AOI
+d=data.frame(left=c(508.8,1008,508.8,1008), right=c(912,1392,912,1392), bottom=c(513,513,81,81), top=c(891,891,459,459), r=c(1,2,3,4))
+
+for (t in 1:nrow(test_ET)){
+
+  if (t %% plot_freq == 0){
+    ID <- unique(test_ET$ID)
+    Trial <- unique(test_ET$Trial)
+    Reaction_time <- round(test_ET$reaction_time[1], 3)
+    
+    if(test_ET$Dom_eye[1] == "left"){
+
+    plotX <- test_ET %>%
+      ggplot(aes(pxLeftGazePointX, pxLeftGazePointY, color = FixationNum)) +
+      geom_point() + 
+      scale_color_gradient(low = "yellow", high = "red", na.value = "#000000") +
+      xlim(0, 1920) + ylim(0, 1080) +
+      labs(subtitle = paste0("Reaction Time: ", Reaction_time, " Seconds"), 
+             title = paste0("Participant ID: ", ID, ", Trial: ", Trial), caption = paste0("Fixation Threshold: ", FixationThreshold, " px/s")) +
+      xlab("Gaze Point X") + ylab("Gaze Point Y") +
+      geom_rect(aes(xmin=d[1,1], xmax=d[1,2], ymin=d[1,3], ymax=d[1,4])) +
+      geom_rect(aes(xmin=d[2,1], xmax=d[2,2], ymin=d[2,3], ymax=d[2,4])) +
+      geom_rect(aes(xmin=d[3,1], xmax=d[3,2], ymin=d[3,3], ymax=d[3,4])) +
+      geom_rect(aes(xmin=d[4,1], xmax=d[4,2], ymin=d[4,3], ymax=d[4,4])) +
+      theme_bw()
+    } else{ #If dom-eye == right
+      plotX <- test_ET %>%
+      ggplot(aes(pxRightGazePointX, pxRightGazePointY, color = FixationNum)) +
+        geom_point() +
+        scale_color_gradient(low = "yellow", high = "red", na.value = "#000000") +
+        xlim(0, 1920) + ylim(0, 1080) +
+        labs(subtitle = paste0("Reaction Time: ", Reaction_time, " Seconds"), 
+             title = paste0("Participant ID: ", ID, ", Trial: ", Trial), caption = paste0("Fixation Threshold: ", FixationThreshold, " px/s")) + 
+        xlab("Gaze Point X") + ylab("Gaze Point Y") +
+        geom_rect(aes(xmin=d[1,1], xmax=d[1,2], ymin=d[1,3], ymax=d[1,4]), alpha = 0) +
+      geom_rect(aes(xmin=d[2,1], xmax=d[2,2], ymin=d[2,3], ymax=d[2,4]), alpha = 0) +
+      geom_rect(aes(xmin=d[3,1], xmax=d[3,2], ymin=d[3,3], ymax=d[3,4]), alpha = 0) +
+      geom_rect(aes(xmin=d[4,1], xmax=d[4,2], ymin=d[4,3], ymax=d[4,4]), alpha = 0) + 
+        theme_bw()
+    }
+  }
+}
+print(plotX)
+
+##Only plotting X or Y axis
+for (t in 1:nrow(test_ET)){
+
+  if (t %% plot_freq == 0){
+    ID <- unique(test_ET$ID)
+    Trial <- unique(test_ET$Trial)
+    Reaction_time <- round(test_ET$reaction_time[1], 3)
+    
+    if(test_ET$Dom_eye[1] == "left"){
+
+    plotX1 <- test_ET %>%
+      ggplot(aes(x = TimeSinceTrialOnset, y = pxLeftGazePointX, color = FixationNum)) +
+      geom_point() + 
+      scale_color_gradient(low = "yellow", high = "red", na.value = "#000000") +
+      xlim(min(test_ET$TimeSinceTrialOnset), max(test_ET$TimeSinceTrialOnset)) + ylim(0, 1920) +
+      labs(subtitle = paste0("Reaction Time: ", Reaction_time, " Seconds"), 
+             title = paste0("Participant ID: ", ID, ", Trial: ", Trial), caption = paste0("Fixation Threshold: ", FixationThreshold, " px/s")) +
+      xlab("Time Since Trial Onset (ms)") + ylab("Gaze Point X") +
+      theme_bw()
+    } else{ #If dom-eye == right
+      plotX1 <- test_ET %>%
+      ggplot(aes(x = TimeSinceTrialOnset, y = pxLeftGazePointX, color = FixationNum)) +
+        geom_point() +
+        scale_color_gradient(low = "yellow", high = "red", na.value = "#000000") +
+        xlim(min(test_ET$TimeSinceTrialOnset), max(test_ET$TimeSinceTrialOnset)) + ylim(0, 1920) +
+        labs(subtitle = paste0("Reaction Time: ", Reaction_time, " Seconds"), 
+             title = paste0("Participant ID: ", ID, ", Trial: ", Trial), caption = paste0("Fixation Threshold: ", FixationThreshold, " px/s")) + 
+        xlab("Time Since Trial Onset (ms)") + ylab("Gaze Point X") + 
+        theme_bw()
+    }
+  }
+}
+print(plotX1)
+
+```
+
+
+
+#First look analysis. Making some plots etc.
+```{r}
+unique(ET_test$Trial)
+#The proportion of TRUE/FALSE in the boxes
+somedata <- EventsAll %>% 
+  #filter(Gaze_in_AOI != 0) %>% 
+  group_by(ID, SentenceNumber, AverageWarmth, AverageComp, ValenceWarmth, ValenceComp, choice_congruence, percent100, percent66, percent33, percent0, choice, Trial, reaction_time) %>% 
+  summarise(ProportionBox1 = (sum(Box1, is.na = TRUE))/length(Box1),
+            ProportionBox2 = (sum(Box2, is.na = TRUE))/length(Box2),
+            ProportionBox3 = (sum(Box3, is.na = TRUE))/length(Box3),
+            ProportionBox4 = (sum(Box4, is.na = TRUE))/length(Box4))
+
+#In somedata1 i also have the fixation durations if I need them.
+somedata1 <- EventsAll %>% 
+  group_by(ID, Trial, FixationNum) %>% 
+  summarise(FixationsBox1 = ifelse(sum(Event == "Fixation" & Gaze_in_AOI == 1) > 0, 1, 0),
+            FixationDurBox1 = sum(Event == "Fixation" & Gaze_in_AOI == 1)*23,
+            FixationsBox2 = ifelse(sum(Event == "Fixation" & Gaze_in_AOI == 2) > 0, 1, 0),
+            FixationDurBox2 = sum(Event == "Fixation" & Gaze_in_AOI == 2)*23,
+            FixationsBox3 = ifelse(sum(Event == "Fixation" & Gaze_in_AOI == 3) > 0, 1, 0),
+            FixationDurBox3 = sum(Event == "Fixation" & Gaze_in_AOI == 3)*23,
+            FixationsBox4 = ifelse(sum(Event == "Fixation" & Gaze_in_AOI == 4) > 0, 1, 0),
+            FixationDurBox4 = sum(Event == "Fixation" & Gaze_in_AOI == 4)*23,
+            )
+
+somedata2 <- somedata1 %>%
+  filter(FixationNum >=0) %>% 
+  group_by(ID, Trial) %>% 
+  summarise(FixationsBox1 = ifelse(sum(FixationsBox1) > 0, sum(FixationsBox1), 0),
+            FixationsBox2 = ifelse(sum(FixationsBox2) > 0, sum(FixationsBox2), 0),
+            FixationsBox3 = ifelse(sum(FixationsBox3) > 0, sum(FixationsBox3), 0),
+            FixationsBox4 = ifelse(sum(FixationsBox4) > 0, sum(FixationsBox4), 0))
+
+somedata <- left_join(somedata, somedata2, by = c("ID", "Trial")) %>% 
+  arrange(desc(ID, Trial))
+str(somedata)
+
+somedata <- somedata %>% 
+  mutate(selectBox1 = ifelse(choice == 1, 1,0),
+         selectBox2 = ifelse(choice == 2, 1,0),
+         selectBox3 = ifelse(choice == 3, 1,0),
+         selectBox4 = ifelse(choice == 4, 1,0),
+  )
+              
+somedata <- somedata %>%
+  mutate(ID = as.factor(ID),
+         SentenceNumber = as.factor(SentenceNumber),
+         choice_congruence = as.factor(choice_congruence),
+         percent100 = factor(percent100, levels = c("1","2","3","4")),
+         percent66 = factor(percent66, levels = c("1","2","3","4")),
+         percent33 = factor(percent33, levels = c("1","2","3","4")),
+         percent0 = factor(percent0, levels = c("1","2","3","4")),
+         choice = factor(choice, levels = c("1","2","3","4")),
+         ValenceWarmth = factor(ValenceWarmth, levels = c("LW", "HW")),
+         ValenceComp = factor(ValenceComp, levels = c("LC", "HC")),
+         selectBox1 = factor(selectBox1, levels = c(0,1)),
+         selectBox2 = factor(selectBox2, levels = c(0,1)),
+         selectBox3 = factor(selectBox3, levels = c(0,1)),
+         selectBox4 = factor(selectBox4, levels = c(0,1)),
+         choice_congruence = factor(choice_congruence, levels = c(0, 33, 66, 100))
+         )
+str(somedata)
+#See if i can find the how many time a participant chose the 100percent congruence across trials
+choices_participants <- somedata %>% 
+  group_by(ID, choice_congruence) %>% 
+  count()
+
+#Trying to summarize some data, but it doesn't seem like there are crazy outliers
+choices_participants %>% 
+  ggplot(aes(x = choice_congruence, y = n, fill = choice_congruence, color = ID)) + geom_point()
+
+somedata %>% 
+  group_by(choice_congruence) %>% 
+  summarise(Choice100 = sum(choice_congruence == 100)/nrow(somedata),
+            Choice66 = sum(choice_congruence == 66)/nrow(somedata),
+            Choice33 = sum(choice_congruence == 33)/nrow(somedata),
+            Choice0 = sum(choice_congruence == 0)/nrow(somedata))
+
+somedata %>% 
+  group_by(ID) %>% 
+  count(sort = T)
+
+somedata %>% 
+  group_by(choice) %>% 
+  count(sort = T)
+
+
+mean(somedata$ProportionBox1) #0.1748766 or 0.3751342 depending on whether you include time spent outside AOI
+mean(somedata$ProportionBox2) #0.1334329 or 0.2884838
+mean(somedata$ProportionBox3) #0.09051713 or 0.1872214
+mean(somedata$ProportionBox4) #0.08895407 or 0.1823653
+
+sd(somedata$ProportionBox1) #0.10
+sd(somedata$ProportionBox2) #0.08
+sd(somedata$ProportionBox3) #0.07
+sd(somedata$ProportionBox4) #0.08
+
+#Mean fixations
+mean(somedata$FixationsBox1) #2.5
+mean(somedata$FixationsBox2) #2.22
+mean(somedata$FixationsBox3) #1.36
+mean(somedata$FixationsBox4) #1.39
+
+###SAME THING AS ABOVE BUT WITH FIXATIONS INSTEAD###
+
+PropBox1Fix <- glmer(selectBox1 ~ FixationsBox1 + FixationsBox2 + FixationsBox3 + FixationsBox4 + (1 | ID), data = somedata, family = "binomial")
+
+PropBox2Fix <- glmer(selectBox2 ~ FixationsBox1 + FixationsBox2 + FixationsBox3 + FixationsBox4 + (1 | ID), data = somedata, family = "binomial")
+
+PropBox3Fix <- glmer(selectBox3 ~ FixationsBox1 + FixationsBox2 + FixationsBox3 + FixationsBox4 + (1 | ID), data = somedata, family = "binomial")
+
+PropBox4Fix <- glmer(selectBox4 ~ FixationsBox1 + FixationsBox2 + FixationsBox3 + FixationsBox4 + (1| ID), data = somedata, family = "binomial")
+
+summary(PropBox1Fix);summary(PropBox2Fix);summary(PropBox3Fix);summary(PropBox4Fix)
+car::vif(PropBox1Fix)
+car::vif(PropBox2Fix)
+car::vif(PropBox3Fix)
+car::vif(PropBox4Fix)
+
+#Convert logits to probability (not odds-ratio, because we're not dealing with a ratio)
+exp(fixef(PropBox1Fix))
+exp(fixef(PropBox2Fix))
+exp(fixef(PropBox3Fix))
+exp(fixef(PropBox4Fix))
+
+#Making predictions with the modes
+PropBox1FixT <- glmer(selectBox1 ~ FixationsBox1 + FixationsBox2 + FixationsBox3 + FixationsBox4 + (1 | ID), data = train, family = "binomial")
+
+PropBox2FixT <- glmer(selectBox2 ~ FixationsBox1 + FixationsBox2 + FixationsBox3 + FixationsBox4 + (1 | ID), data = train, family = "binomial")
+
+PropBox3FixT <- glmer(selectBox3 ~ FixationsBox1 + FixationsBox2 + FixationsBox3 + FixationsBox4 + (1 | ID), data = train, family = "binomial")
+
+PropBox4FixT <- glmer(selectBox4 ~ FixationsBox1 + FixationsBox2 + FixationsBox3 + FixationsBox4 + (1| ID), data = train, family = "binomial")
+
+#use model to predict probability of default
+predicted5 <- predict(PropBox1FixT, test, type="response")
+predicted6 <- predict(PropBox2FixT, test, type="response")
+predicted7 <- predict(PropBox3FixT, test, type="response")
+predicted8 <- predict(PropBox4FixT, test, type="response")
+
+#find optimal cutoff probability to use to maximize accuracy
+optimal5 <- optimalCutoff(test$selectBox1, predicted5)[1]
+optimal6 <- optimalCutoff(test$selectBox2, predicted6)[1]
+optimal7 <- optimalCutoff(test$selectBox3, predicted7)[1]
+optimal8 <- optimalCutoff(test$selectBox4, predicted8)[1]
+
+#create confusion matrix
+cm5 <- confusionMatrix(test$selectBox1, predicted5, threshold = optimal5)
+cm6 <- confusionMatrix(test$selectBox2, predicted6, threshold = optimal6)
+cm7 <- confusionMatrix(test$selectBox3, predicted7, threshold = optimal7)
+cm8 <- confusionMatrix(test$selectBox4, predicted8, threshold = optimal8)
+
+#Accuracy
+accuracy5 <- sum(cm5[1,1], cm5[2,2]) / sum(cm5[1:2])
+accuracy6 <- sum(cm6[1,1], cm6[2,2]) / sum(cm6[1:2])
+accuracy7 <- sum(cm7[1,1], cm7[2,2]) / sum(cm7[1:2])
+accuracy8 <- sum(cm8[1,1], cm8[2,2]) / sum(cm8[1:2])
+
+#calculate sensitivity
+sensitivity(test$selectBox1, predicted5, threshold = optimal5)
+sensitivity(test$selectBox2, predicted6, threshold = optimal6)
+sensitivity(test$selectBox3, predicted7, threshold = optimal7)
+sensitivity(test$selectBox4, predicted8, threshold = optimal8)
+
+#calculate specificity
+specificity(test$selectBox1, predicted5, threshold = optimal5)
+specificity(test$selectBox2, predicted6, threshold = optimal6)
+specificity(test$selectBox3, predicted7, threshold = optimal7)
+specificity(test$selectBox4, predicted8, threshold = optimal8)
+
+#calculate total misclassification error rate
+misClassError(test$selectBox1, predicted5, threshold=optimal5)
+misClassError(test$selectBox2, predicted6, threshold=optimal6)
+misClassError(test$selectBox3, predicted7, threshold=optimal7)
+misClassError(test$selectBox4, predicted8, threshold=optimal8)
+
+
+###IS TIME SPENT IN AOI PREDICTED BY LOCATION OF PERCENT100??###
+################################################################
+PropPerc1 <- lmerTest::lmer(FixationsBox1 ~ percent100 + (1|ID), data = somedata)
+PropPerc2 <- lmerTest::lmer(FixationsBox2 ~ percent100 + (1|ID), data = somedata)
+PropPerc3 <- lmerTest::lmer(FixationsBox3 ~ percent100 + (1|ID), data = somedata)
+PropPerc4 <- lmerTest::lmer(FixationsBox4 ~ percent100 + (1|ID), data = somedata)
+summary(PropPerc1);summary(PropPerc2);summary(PropPerc3);summary(PropPerc4)
+r.squaredGLMM(PropPerc1)
+r.squaredGLMM(PropPerc2)
+r.squaredGLMM(PropPerc3)
+r.squaredGLMM(PropPerc4)
+
+?r.squaredGLMM
+
+comparisonsPropPerc1 <- emmeans(PropPerc1, "percent100")
+comparisonsPropPerc2 <- emmeans(PropPerc2, "percent100")
+comparisonsPropPerc3 <- emmeans(PropPerc3, "percent100")
+comparisonsPropPerc4 <- emmeans(PropPerc4, "percent100")
+
+pairs(comparisonsPropPerc1)
+pairs(comparisonsPropPerc2)
+pairs(comparisonsPropPerc3)
+pairs(comparisonsPropPerc4)
+
+somedata %>% 
+  group_by(choice) %>% 
+  count(sort = T)
+
+#   choice     n
+#   <fct>  <int>
+# 1 3        327
+# 2 4        289
+# 3 1        285
+# 4 2        269
+
+somedata %>% 
+  group_by(percent100) %>% 
+  count(sort = T)
+
+#   percent100     n
+#   <fct>      <int>
+# 1 3            308
+# 2 4            298
+# 3 2            287
+# 4 1            277
+
+#How many total fixations where there in the AOIs
+somedata <- somedata %>% 
+  mutate(TotalFixations = FixationsBox1 + FixationsBox2, FixationsBox3, FixationsBox4)
+
+mean(somedata$TotalFixations) #4.72 fixations per trial on average
+sd(somedata$TotalFixations) #3.02
+
+#Find out which box in congruence terms the participants have looked at the most
+test %>% 
+  group_by(selectBox1, selectBox2, selectBox3, selectBox4) %>% 
+  count()
+
+#Are choice and percent100 independent? 
+covary <- somedata %>%
+  group_by(ID, Trial) %>% 
+  dplyr::select(choice, percent100)
+
+covary <- covary %>% 
+  group_by(ID, Trial) %>% 
+  mutate(is100 = ifelse(choice == percent100, 1, 0))
+
+covary %>% 
+  group_by(is100) %>% 
+  count()
+
+somedata %>% 
+  ggplot(aes(log(reaction_time))) + geom_density() #reaction time is lognormal.
+##Model sentence valence and Reaction time
+mean(somedata$reaction_time)
+sd(somedata$reaction_time)
+
+valenceMod <- lmerTest::lmer(log(reaction_time) ~ AverageWarmth*AverageComp + (1|ID), data = somedata)
+valenceModCat <- lmerTest::lmer(log(reaction_time) ~ ValenceWarmth*ValenceComp + (1|ID), data = somedata)
+valenceModCatv2 <- lmerTest::lmer(log(reaction_time) ~ ValenceWarmth*ValenceComp + choice_congruence + (1|ID), data = somedata)
+summary(valenceModCat);summary(valenceMod)
+summary(glht(valenceModCatv2, mcp(choice_congruence="Tukey"))) #People do not choose faster when they choose 100percent congruence vs. 0percent congruence
+r.squaredGLMM(valenceMod)
+
+EventsAll %>%
+  filter(Gaze_in_AOI != 0) %>% 
+  group_by(Gaze_in_AOI, percent100, percent66, percent33, percent0) %>% 
+  summarise(meanGazeTime = sum())
+
+exp(fixef(valenceMod))
+
+#Plotting mean reaction time versus choice_congruence --> No difference 
+ggplot(somedata) + 
+  geom_bar(aes(choice_congruence, 
+               reaction_time, fill = as.factor(choice_congruence)), position = "dodge", stat ="summary", fun.y = "mean")
+
+
+##Model whether the location of percent100 was a significant predictor for the choice
+perc100model1 <- glmer(selectBox1 ~ percent100 + (1 | ID), data = somedata, family = "binomial")
+
+perc100model2 <- glmer(selectBox2 ~ percent100 + (1 | ID), data = somedata, family = "binomial")
+
+perc100model3 <- glmer(selectBox3 ~ percent100 + (1 | ID), data = somedata, family = "binomial")
+
+perc100model4 <- glmer(selectBox4 ~ percent100 + (1 | ID), data = somedata, family = "binomial")
+
+summary(perc100model1)
+plot(allEffects(perc100model1))
+
+predicted1 <- as.data.frame(predicted1)
+
+rmse(somedata$selectBox1, predicted1)
+
+#pairwise comparison of the different factor levels in the model
+summary(glht(perc100model1, mcp(percent100="Tukey")), test = adjusted("bonferroni"))
+summary(glht(perc100model2, mcp(percent100="Tukey")), test = adjusted("bonferroni"))
+summary(glht(perc100model3, mcp(percent100="Tukey")), test = adjusted("bonferroni"))
+summary(glht(perc100model4, mcp(percent100="Tukey")), test = adjusted("bonferroni"))
+
+#Same as above, but with using emmeans to find probabilities
+perc100m1emm <- emmeans(perc100model1, "percent100", type = "response")
+perc100m2emm <- emmeans(perc100model2, "percent100", type = "response")
+perc100m3emm <- emmeans(perc100model3, "percent100", type = "response")
+perc100m4emm <- emmeans(perc100model4, "percent100", type = "response")
+pairs(perc100m1emm, reverse = T)
+pairs(perc100m2emm, reverse = T)
+pairs(perc100m3emm, reverse = T)
+pairs(perc100m4emm, reverse = T)
+
+#Checking for multicollinearity
+car::vif(perc100model2)
+
+#Checking for influential values
+plot(perc100model1, which = 2, id.n = 3)
+
+#Making predicions with the models
+#Making a test and training data set
+sample <- sample(c(TRUE, FALSE), nrow(somedata), replace=TRUE, prob=c(0.7,0.3))
+train <- somedata[sample, ]
+test <- somedata[!sample, ]
+
+#Train models on the training data
+perc100model1T <- glmer(selectBox1 ~ percent100 + (1 | ID), data = train, family = "binomial")
+perc100model2T <- glmer(selectBox2 ~ percent100 + (1 | ID), data = train, family = "binomial")
+perc100model3T <- glmer(selectBox3 ~ percent100 + (1 | ID), data = train, family = "binomial")
+perc100model4T <- glmer(selectBox4 ~ percent100 + (1 | ID), data = train, family = "binomial")
+
+#use model to predict probability of default
+predicted1 <- predict(perc100model1T, test, type="response")
+predicted2 <- predict(perc100model2T, test, type="response")
+predicted3 <- predict(perc100model3T, test, type="response")
+predicted4 <- predict(perc100model4T, test, type="response")
+
+#find optimal cutoff probability to use to maximize accuracy
+optimal1 <- optimalCutoff(test$selectBox1, predicted1)[1]
+optimal2 <- optimalCutoff(test$selectBox2, predicted2)[1]
+optimal3 <- optimalCutoff(test$selectBox3, predicted3)[1]
+optimal4 <- optimalCutoff(test$selectBox4, predicted4)[1]
+
+?optimalCutoff
+
+#create confusion matrix
+cm1 <- confusionMatrix(test$selectBox1, predicted1, threshold = optimal1)
+cm2 <- confusionMatrix(test$selectBox2, predicted2, threshold = optimal2)
+cm3 <- confusionMatrix(test$selectBox3, predicted3, threshold = optimal3)
+cm4 <- confusionMatrix(test$selectBox4, predicted4, threshold = optimal4)
+
+
+
+accuracy1 <- sum(cm1[1,1], cm1[2,2]) / sum(cm1[1:2])
+accuracy2 <- sum(cm2[1,1], cm2[2,2]) / sum(cm2[1:2])
+accuracy3 <- sum(cm3[1,1], cm3[2,2]) / sum(cm3[1:2])
+accuracy4 <- sum(cm4[1,1], cm4[2,2]) / sum(cm4[1:2])
+
+
+#calculate sensitivity
+sensitivity(test$selectBox1, predicted1, threshold = optimal1)
+sensitivity(test$selectBox2, predicted2, threshold = optimal2)
+sensitivity(test$selectBox3, predicted3, threshold = optimal3)
+sensitivity(test$selectBox4, predicted4, threshold = optimal4)
+?rse
+#calculate specificity
+specificity(test$selectBox1, predicted1, threshold = optimal1)
+specificity(test$selectBox2, predicted2, threshold = optimal2)
+specificity(test$selectBox3, predicted3, threshold = optimal3)
+specificity(test$selectBox4, predicted4, threshold = optimal4)
+
+#calculate total misclassification error rate
+misClassError(test$selectBox1, predicted1, threshold=optimal1)
+misClassError(test$selectBox2, predicted2, threshold=optimal2)
+misClassError(test$selectBox3, predicted3, threshold=optimal3)
+misClassError(test$selectBox4, predicted4, threshold=optimal4)
+
+hist(ET_test$LeftGazePointX)
+hist(ET_test$LeftGazePointY) #This looks like the participants spend more time looking at Y = 0->20, but that would be where the text is. So maybe the data is flipped.
+ET_test %>% 
+  filter(RightGazePointX != 0 | RightGazePointY != 0 |
+           LeftGazePointX != 0 | LeftGazePointY != 0) %>% 
+  hist(RightGazePointX)
+
+ET_test %>% 
+  filter(RightGazePointY != 0) %>% 
+  count()
+  ggplot(aes(RightGazePointY)) + geom_histogram() + theme_bw()
+
+
+
+correlations <- cor(somedata[,19:22], method = "pearson")
+corrplot(correlations, method="circle")
+
+correlationsWC <- cor(somedata[,3:4], method = "kendall")
+corrplot(correlationsWC, method = "circle")
+correlationsWC
+```
+
+##Confusion matrix tutorial
+```{r}
+#load necessary packages
+p_load(caret, InformationValue, ISLR)
+
+#load dataset
+data <- Default
+
+#split dataset into training and testing set
+set.seed(1)
+sample <- sample(c(TRUE, FALSE), nrow(data), replace=TRUE, prob=c(0.7,0.3))
+train <- data[sample, ]
+test <- data[!sample, ]
+
+#fit logistic regression model
+model <- glm(default~student+balance+income, family="binomial", data=train)
+
+#use model to predict probability of default
+predicted <- predict(model, test, type="response")
+
+#convert defaults from "Yes" and "No" to 1's and 0's
+test$default <- ifelse(test$default=="Yes", 1, 0)
+
+#find optimal cutoff probability to use to maximize accuracy
+optimal <- optimalCutoff(test$default, predicted)[1]
+
+#create confusion matrix
+confusionMatrix(test$default, predicted)
+
+#calculate sensitivity
+sensitivity(test$default, predicted)
+
+#calculate specificity
+specificity(test$default, predicted)
+
+
+#calculate total misclassification error rate
+misClassError(test$default, predicted, threshold=optimal)
+
+
+
+```
+
+#Extra analyses
+```{r}
+dat <- somedata %>% 
+  filter(choice_congruence == 100) %>% 
+  group_by(choice_congruence, ID) %>% 
+  summarise(nPerc100 = n()) %>% 
+  arrange(desc(nPerc100))
+
+mean(dat$nPerc100)
+median(dat$nPerc100)
+max(dat$nPerc100)
+min(dat$nPerc100)
+
+sentences_used <- sentences_used %>% 
+  mutate(WC_dist = abs(AverageWarmth-AverageComp),
+         contains_but = as.factor(ifelse(grepl("but", Sentence), 1, 0)))
+
+
+sentences_used %>% 
+  group_by(contains_but) %>% 
+  summarise(mean_WC = mean(WC_dist)) %>% 
+  ggplot(aes(x = contains_but, y = mean_WC, fill = contains_but)) + geom_bar(stat = "identity") + ylab("Mean Distance between W and C") + xlab("Contains 'but'")
+
+```
+
